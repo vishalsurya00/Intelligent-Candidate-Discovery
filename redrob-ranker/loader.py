@@ -180,14 +180,37 @@ class CandidateLoader:
 
 if __name__ == "__main__":
     import random
+    from datetime import date
+
+    def subtract_months(target_date: date, months: int) -> date:
+        """
+        Safely subtracts a number of months from a date object.
+        """
+        year = target_date.year - (months // 12)
+        month = target_date.month - (months % 12)
+        if month <= 0:
+            year -= 1
+            month += 12
+        day = min(target_date.day, 28)
+        return date(year, month, day)
 
     # Resolve path to the sample candidate file in the same directory
     current_dir = os.path.dirname(os.path.abspath(__file__))
     sample_file_path = os.path.join(current_dir, "sample_candidates.json")
 
-    # Generate 50 mock candidates to facilitate testing and validation
-    if not os.path.exists(sample_file_path):
-        print(f"Sample candidate file not found. Generating mock candidates in {sample_file_path}...")
+    # Force regeneration if file doesn't exist or lacks the new 'start_date' fields
+    regenerate = True
+    if os.path.exists(sample_file_path):
+        try:
+            with open(sample_file_path, "r", encoding="utf-8") as f:
+                first_line = f.readline()
+                if "start_date" in first_line:
+                    regenerate = False
+        except Exception:
+            pass
+
+    if regenerate:
+        print(f"Generating updated {sample_file_path} with job timelines and mock honeypots...")
         
         titles = [
             "Software Engineer", "Senior Software Engineer", "Tech Lead",
@@ -202,39 +225,65 @@ if __name__ == "__main__":
         institutions = ["Stanford University", "MIT", "UC Berkeley", "IIT Bombay", "University of Oxford", "CMU"]
 
         dummy_candidates = []
-        for i in range(1, 51):
+        
+        # 1. Generate 45 clean candidates with valid timelines
+        for i in range(1, 46):
             cand_id = f"CAND_{i:07d}"
-            years_exp = round(random.uniform(1.0, 15.0), 1)
             title_idx = random.randint(0, len(titles) - 1)
             loc_idx = random.randint(0, len(locations) - 1)
 
-            # Assemble skill profiles
+            # Skills
             cand_skills = []
             num_skills = random.randint(2, 6)
             chosen_skills = random.sample(skill_names, num_skills)
             for skill in chosen_skills:
+                prof = random.choice(["Beginner", "Intermediate", "Advanced", "Expert"])
+                dur = random.randint(12, 60) # Ensure duration is non-zero
+                endorse = random.randint(1, 15) # Ensure endorsements is non-zero
                 cand_skills.append({
                     "name": skill,
-                    "proficiency": random.choice(["Beginner", "Intermediate", "Advanced", "Expert"]),
-                    "endorsements": random.randint(0, 15),
-                    "duration_months": random.randint(6, 60)
+                    "proficiency": prof,
+                    "endorsements": endorse,
+                    "duration_months": dur
                 })
 
-            # Assemble employment history
+            # Career History with start/end dates
             career = []
             num_jobs = random.randint(1, 3)
+            current_date_tracker = date(2026, 6, 18)
             for j in range(num_jobs):
+                is_curr = (j == 0)
+                dur = random.randint(12, 36)
+
+                if is_curr:
+                    end_dt_str = None if random.choice([True, False]) else "2026-06-18"
+                    end_dt = date(2026, 6, 18)
+                else:
+                    end_dt = current_date_tracker
+                    end_dt_str = end_dt.strftime("%Y-%m-%d")
+
+                start_dt = subtract_months(end_dt, dur)
+                start_dt_str = start_dt.strftime("%Y-%m-%d")
+
                 career.append({
                     "company": f"Company {chr(65 + random.randint(0, 25))}",
                     "title": random.choice(titles),
                     "industry": random.choice(["Technology", "Finance", "Healthcare", "E-commerce"]),
                     "company_size": random.choice(["1-10", "11-50", "51-200", "201-500", "501-1000", "1000+"]),
-                    "duration_months": random.randint(6, 48),
-                    "is_current": (j == 0),
+                    "start_date": start_dt_str,
+                    "end_date": end_dt_str,
+                    "duration_months": dur,
+                    "is_current": is_curr,
                     "description": "Responsible for core service implementations and technical feature delivery."
                 })
+                # Set tracker for previous job (with a gap)
+                current_date_tracker = subtract_months(start_dt, random.randint(1, 6))
 
-            # Assemble educational history
+            # Stated experience is derived from career duration to prevent mismatch flags
+            total_months = sum(float(role.get("duration_months", 0)) for role in career)
+            years_exp = round(total_months / 12.0 + random.uniform(0.0, 1.0), 1)
+
+            # Education
             edu = []
             num_edu = random.randint(1, 2)
             for _ in range(num_edu):
@@ -245,7 +294,7 @@ if __name__ == "__main__":
                     "tier": random.choice([1, 2, 3])
                 })
 
-            # Assemble behavioral signals (23 fields)
+            # Redrob Signals
             signals = {
                 "open_to_work_flag": random.choice([True, False]),
                 "last_active_date": "2026-06-18",
@@ -286,6 +335,134 @@ if __name__ == "__main__":
                 "redrob_signals": signals
             })
 
+        # 2. Inject 5 mock Honeypot candidates
+
+        # Honeypot 1: Timeline Impossibility (CAND_0000046)
+        # Claims 60 months, but dates only show 5 months
+        dummy_candidates.append({
+            "candidate_id": "CAND_0000046",
+            "profile": {"years_of_experience": 6.5, "current_title": "Senior AI Engineer", "location": "Pune", "country": "India"},
+            "skills": [{"name": "Python", "proficiency": "Expert", "endorsements": 8, "duration_months": 60}],
+            "career_history": [{
+                "company": "Fake Corp",
+                "title": "Machine Learning Engineer",
+                "industry": "Technology",
+                "company_size": "201-500",
+                "start_date": "2025-01-01",
+                "end_date": "2025-06-01",
+                "duration_months": 60,
+                "is_current": False,
+                "description": "Used embeddings and vector databases to build systems."
+            }],
+            "education": [{"institution": "Stanford University", "degree": "M.S.", "field_of_study": "Computer Science", "tier": 1}],
+            "redrob_signals": {"open_to_work_flag": True, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.9, "notice_period_days": 30, "github_activity_score": 80, "interview_completion_rate": 0.95}
+        })
+
+        # Honeypot 2: Skill Fraud (CAND_0000047)
+        # Over 3 expert skills with 0 endorsements and <3 duration
+        dummy_candidates.append({
+            "candidate_id": "CAND_0000047",
+            "profile": {"years_of_experience": 5.0, "current_title": "AI Engineer", "location": "Noida", "country": "India"},
+            "skills": [
+                {"name": "Python", "proficiency": "Expert", "endorsements": 0, "duration_months": 0},
+                {"name": "Embeddings", "proficiency": "Expert", "endorsements": 0, "duration_months": 0},
+                {"name": "Vector Database", "proficiency": "Advanced", "endorsements": 0, "duration_months": 0},
+                {"name": "Transformers", "proficiency": "Expert", "endorsements": 0, "duration_months": 1}
+            ],
+            "career_history": [{
+                "company": "Logistics Ltd",
+                "title": "Software Developer",
+                "industry": "Technology",
+                "company_size": "51-200",
+                "start_date": "2023-01-01",
+                "end_date": "2026-01-01",
+                "duration_months": 36,
+                "is_current": False,
+                "description": "Standard software development."
+            }],
+            "education": [{"institution": "IIT Bombay", "degree": "B.Tech", "field_of_study": "Computer Science", "tier": 1}],
+            "redrob_signals": {"open_to_work_flag": True, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.9, "notice_period_days": 30, "github_activity_score": 50, "interview_completion_rate": 0.95}
+        })
+
+        # Honeypot 3: Experience Mismatch (CAND_0000048)
+        # Claims 15 years, but history totals 1 year
+        dummy_candidates.append({
+            "candidate_id": "CAND_0000048",
+            "profile": {"years_of_experience": 15.0, "current_title": "Tech Lead", "location": "Bangalore", "country": "India"},
+            "skills": [{"name": "Python", "proficiency": "Expert", "endorsements": 10, "duration_months": 12}],
+            "career_history": [{
+                "company": "Startup A",
+                "title": "Developer",
+                "industry": "Technology",
+                "company_size": "11-50",
+                "start_date": "2025-01-01",
+                "end_date": "2026-01-01",
+                "duration_months": 12,
+                "is_current": True,
+                "description": "Developer."
+            }],
+            "education": [{"institution": "BITS Pilani", "degree": "B.E.", "field_of_study": "Computer Science", "tier": 1}],
+            "redrob_signals": {"open_to_work_flag": False, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.85, "notice_period_days": 30, "github_activity_score": 60, "interview_completion_rate": 0.9}
+        })
+
+        # Honeypot 4: Title-Skill Mismatch (CAND_0000049)
+        # 5 AI skills, but all roles are non-tech (Marketing/Sales)
+        dummy_candidates.append({
+            "candidate_id": "CAND_0000049",
+            "profile": {"years_of_experience": 8.0, "current_title": "Marketing Manager", "location": "Hyderabad", "country": "India"},
+            "skills": [
+                {"name": "Python", "proficiency": "Expert", "endorsements": 10, "duration_months": 48},
+                {"name": "Machine Learning", "proficiency": "Expert", "endorsements": 5, "duration_months": 36},
+                {"name": "Deep Learning", "proficiency": "Expert", "endorsements": 8, "duration_months": 24},
+                {"name": "NLP", "proficiency": "Expert", "endorsements": 4, "duration_months": 24},
+                {"name": "Transformers", "proficiency": "Expert", "endorsements": 5, "duration_months": 12}
+            ],
+            "career_history": [{
+                "company": "Retail Corp",
+                "title": "Marketing Coordinator",
+                "industry": "Retail",
+                "company_size": "501-1000",
+                "start_date": "2020-01-01",
+                "end_date": "2024-01-01",
+                "duration_months": 48,
+                "is_current": False,
+                "description": "Executed digital marketing campaigns and managed social media presence."
+            }, {
+                "company": "Agency B",
+                "title": "Sales Associate",
+                "industry": "Marketing",
+                "company_size": "11-50",
+                "start_date": "2016-01-01",
+                "end_date": "2020-01-01",
+                "duration_months": 48,
+                "is_current": False,
+                "description": "Generated outbound sales leads and handled cold calls."
+            }],
+            "education": [{"institution": "Delhi University", "degree": "BBA", "field_of_study": "Marketing", "tier": 2}],
+            "redrob_signals": {"open_to_work_flag": True, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.75, "notice_period_days": 15, "github_activity_score": 20, "interview_completion_rate": 0.8}
+        })
+
+        # Honeypot 5: Multiple Flags (CAND_0000050)
+        # Has > 20 skills (25) and experience mismatch
+        dummy_candidates.append({
+            "candidate_id": "CAND_0000050",
+            "profile": {"years_of_experience": 12.0, "current_title": "Product Owner", "location": "Mumbai", "country": "India"},
+            "skills": [{"name": f"Skill {k}", "proficiency": "Expert", "endorsements": 5, "duration_months": 12} for k in range(25)],
+            "career_history": [{
+                "company": "Financial Services",
+                "title": "Business Analyst",
+                "industry": "Finance",
+                "company_size": "1000+",
+                "start_date": "2024-01-01",
+                "end_date": "2026-01-01",
+                "duration_months": 24,
+                "is_current": True,
+                "description": "Gathered software requirements."
+            }],
+            "education": [{"institution": "Mumbai University", "degree": "B.Com", "field_of_study": "Finance", "tier": 2}],
+            "redrob_signals": {"open_to_work_flag": False, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.9, "notice_period_days": 60, "github_activity_score": 10, "interview_completion_rate": 0.95}
+        })
+
         # Write out to sample file
         with open(sample_file_path, "w", encoding="utf-8") as f:
             for cand in dummy_candidates:
@@ -314,12 +491,10 @@ if __name__ == "__main__":
     for i, candidate in enumerate(loaded_candidates[:3], start=1):
         cand_id = candidate.get("candidate_id", "N/A")
         
-        # Access nested profile attributes
         profile = candidate.get("profile", {})
         title = profile.get("current_title", "N/A")
         years_exp = profile.get("years_of_experience", "N/A")
         
-        # Access nested redrob signals
         signals = candidate.get("redrob_signals", {})
         open_to_work = signals.get("open_to_work_flag", "N/A")
 
@@ -329,3 +504,4 @@ if __name__ == "__main__":
         print(f"  profile.years_experience: {years_exp}")
         print(f"  signals.open_to_work:     {open_to_work}")
         print("-" * 50)
+
