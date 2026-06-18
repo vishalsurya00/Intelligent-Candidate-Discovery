@@ -1,0 +1,6 @@
+pandas
+tqdm
+streamlit
+scikit-learn
+numpy
+psutil
