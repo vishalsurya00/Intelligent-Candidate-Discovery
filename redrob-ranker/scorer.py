@@ -110,14 +110,25 @@ class CandidateScorer:
         total_weight = sum(m[0] for m in matched_skills)
         total_weighted_trust = sum(m[0] * (m[0] * m[1]) for m in matched_skills)
 
+        skills_score = 0.0
         if total_weight > 0:
             raw_score = total_weighted_trust / total_weight
             # Apply a coverage factor to reward candidates with more matched skills (capped at 1.0)
             # A top candidate should ideally match at least 4 key skills
             coverage = min(1.0, len(matched_skills) / 4.0)
-            return raw_score * coverage
+            skills_score = raw_score * coverage
         
-        return 0.0
+        # Apply Title Penalty (Fix 1)
+        PENALIZED_TITLES = [
+            "marketing", "sales", "accountant", "hr", "human resources",
+            "operations", "supply chain", "customer support", "finance",
+            "procurement", "legal", "administrative", "receptionist"
+        ]
+        current_title = candidate.get("profile", {}).get("current_title", "").lower().strip()
+        if any(pt in current_title for pt in PENALIZED_TITLES):
+            skills_score *= 0.3
+
+        return skills_score
 
     def score_career(self, candidate: dict) -> float:
         """
@@ -147,6 +158,21 @@ class CandidateScorer:
             "nlp", "transformer", "vector", "machine learning", "deep learning"
         ]
 
+        STRONG_POSITIVE_TITLES = [
+            "machine learning", "ml engineer", "ai engineer", "data scientist",
+            "nlp engineer", "research scientist", "recommendation", 
+            "search engineer", "ranking engineer", "retrieval", 
+            "backend engineer", "software engineer", "full stack",
+            "platform engineer", "infrastructure"
+        ]
+
+        AI_KEYWORDS_SPECIFIC = [
+            "embedding", "vector", "retrieval", "ranking", "search", "nlp", 
+            "transformer", "recommendation", "machine learning", "neural"
+        ]
+
+        career_bonus = 0.0
+
         # Process each job in employment history
         for job in history:
             company = job.get("company", "").lower().strip()
@@ -154,6 +180,7 @@ class CandidateScorer:
             company_size = job.get("company_size", "")
             industry = job.get("industry", "").lower()
             desc = job.get("description", "").lower()
+            title = job.get("title", "").lower().strip()
 
             total_duration += duration
 
@@ -174,6 +201,14 @@ class CandidateScorer:
             if any(kw in desc for kw in ai_keywords):
                 has_aiml_keywords = True
 
+            # AI/ML role detection bonus (Fix 2)
+            if any(t in title for t in STRONG_POSITIVE_TITLES):
+                career_bonus += 0.3
+            
+            kw_matches = sum(1 for kw in AI_KEYWORDS_SPECIFIC if kw in desc)
+            if kw_matches >= 3:
+                career_bonus += 0.2
+
         # Calculate blacklist ratio
         blacklist_ratio = (blacklist_duration / total_duration) if total_duration > 0 else 0.0
 
@@ -189,7 +224,8 @@ class CandidateScorer:
         if avg_non_blacklist_duration > 18.0:
             career_points += 0.3
 
-        career_score = career_points
+        # Add career bonus and cap at 1.0 (Fix 2)
+        career_score = min(1.0, career_points + min(1.0, career_bonus))
 
         # Apply penalty if spent > 60% of career at blacklisted consulting companies
         if blacklist_ratio > 0.60:
@@ -246,6 +282,7 @@ class CandidateScorer:
         # 1. Evaluate last active date
         last_active_str = signals.get("last_active_date", "")
         active_score = 0.1
+        days_diff = 999
         if last_active_str:
             try:
                 # Assume YYYY-MM-DD
@@ -309,6 +346,12 @@ class CandidateScorer:
             behavioral_score = min(1.0, behavioral_base + 0.2)
         else:
             behavioral_score = behavioral_base
+
+        # Fix 3: Active-user boost / penalty
+        if open_to_work is True and days_diff <= 30 and recruiter_rate > 0.6:
+            behavioral_score = min(1.0, behavioral_score * 1.2)
+        elif open_to_work is False and days_diff > 90:
+            behavioral_score = behavioral_score * 0.5
 
         return behavioral_score
 
@@ -386,41 +429,55 @@ class CandidateScorer:
             0.10 * location_score
         )
 
-        # Identify top matched skill
-        top_skill = "None"
-        max_skill_val = -1.0
-        for skill in candidate.get("skills", []):
-            skill_name = skill.get("name", "").lower().strip()
-            is_must = any(mh in skill_name or skill_name in mh for mh in self.MUST_HAVE)
-            is_nice = any(nth in skill_name or skill_name in nth for nth in self.NICE_TO_HAVE)
+        # Extract facts for reasoning string
+        years_exp = float(profile.get("years_of_experience", 0.0))
+        current_title = profile.get("current_title", "N/A")
+        notice_days = signals.get("notice_period_days", "N/A")
+        response_rate = float(signals.get("recruiter_response_rate", 0.0))
 
-            if is_must or is_nice:
-                match_val = 1.0 if is_must else 0.5
+        # Extract current company name and size (Fix reasoning)
+        current_company = "N/A"
+        company_size = "N/A"
+        history = candidate.get("career_history", [])
+        if history:
+            current_job = None
+            for job in history:
+                if job.get("is_current") is True:
+                    current_job = job
+                    break
+            if not current_job:
+                current_job = history[0]
+            current_company = current_job.get("company", "N/A")
+            company_size = current_job.get("company_size", "N/A")
+
+        # Collect top 3 matched MUST_HAVE skills based on trust (Fix reasoning)
+        matched_must_haves = []
+        for skill in candidate.get("skills", []):
+            skill_name = skill.get("name", "").strip()
+            skill_name_lower = skill_name.lower()
+            
+            is_must = any(mh in skill_name_lower or skill_name_lower in mh for mh in self.MUST_HAVE)
+            if is_must:
                 endorsements = float(skill.get("endorsements", 0))
                 duration_months = float(skill.get("duration_months", 0))
                 proficiency = skill.get("proficiency", "").lower().strip()
-
+                
                 trust = min(1.0, (endorsements / 10.0) * 0.4 + (duration_months / 12.0) * 0.6)
                 if proficiency == "expert" and duration_months == 0:
                     trust = 0.1
                 if proficiency == "beginner":
                     trust *= 0.5
-
-                val = match_val * trust
-                if val > max_skill_val:
-                    max_skill_val = val
-                    top_skill = skill.get("name", "N/A")
-
-        # Extract facts for reasoning string
-        years_exp = profile.get("years_of_experience", 0.0)
-        current_title = profile.get("current_title", "N/A")
-        notice_days = signals.get("notice_period_days", "N/A")
-        response_rate = signals.get("recruiter_response_rate", 0.0)
+                    
+                matched_must_haves.append((skill_name, trust))
+                
+        matched_must_haves.sort(key=lambda x: x[1], reverse=True)
+        top_3_skills_list = [item[0] for item in matched_must_haves[:3]]
+        top_3_skills = ", ".join(top_3_skills_list) if top_3_skills_list else "None"
 
         # Calculate blacklist ratio for concerns check
         total_duration = 0.0
         blacklist_duration = 0.0
-        for job in candidate.get("career_history", []):
+        for job in history:
             company = job.get("company", "").lower().strip()
             duration = float(job.get("duration_months", 0))
             total_duration += duration
@@ -428,12 +485,12 @@ class CandidateScorer:
                 blacklist_duration += duration
         blacklist_ratio = (blacklist_duration / total_duration) if total_duration > 0 else 0.0
 
-        # Pinpoint primary concern
+        # Collect concerns
         concerns = []
         if years_exp < 5.0:
-            concerns.append(f"experience ({years_exp} yrs) is below requested 5-9 years")
+            concerns.append(f"experience ({years_exp:.1f} yrs) is below requested 5-9 years")
         elif years_exp > 9.0:
-            concerns.append(f"experience ({years_exp} yrs) exceeds requested 5-9 years")
+            concerns.append(f"experience ({years_exp:.1f} yrs) exceeds requested 5-9 years")
         
         if blacklist_ratio > 0.60:
             concerns.append(f"spent {blacklist_ratio*100:.0f}% of career at consulting-only firms")
@@ -447,12 +504,16 @@ class CandidateScorer:
         if response_rate < 0.70:
             concerns.append(f"has a low recruiter response rate of {response_rate*100:.0f}%")
 
-        primary_concern = concerns[0] if concerns else "no major concerns identified"
+        if concerns:
+            concern_str = f"Concern: {concerns[0]}."
+        else:
+            concern_str = "Strong behavioral signals."
 
         reasoning = (
-            f"Candidate is a {current_title} with {years_exp} years of experience, showing strong matching "
-            f"in {top_skill} as their top skill. They have a notice period of {notice_days} days and a "
-            f"recruiter response rate of {response_rate*100:.0f}%, with the primary concern being that the candidate {primary_concern}."
+            f"{years_exp:.1f} yrs exp as {current_title} at {current_company} "
+            f"({company_size} co). Top skills: {top_3_skills}. "
+            f"Notice: {notice_days}d. Response rate: {response_rate*100:.0f}%. "
+            f"{concern_str}"
         )
 
         return {
@@ -481,9 +542,9 @@ if __name__ == "__main__":
     # Initialize Scorer
     scorer = CandidateScorer()
 
-    # Score and print breakdowns for the first 3 candidates
-    print("\n=== Candidate Scoring Breakdown for First 3 Candidates ===")
-    for i, candidate in enumerate(candidates[:3], start=1):
+    # Score and print breakdowns for the first 5 candidates showing improvement
+    print("\n=== Candidate Scoring Breakdown for First 5 Candidates ===")
+    for i, candidate in enumerate(candidates[:5], start=1):
         scores = scorer.score(candidate)
         print(f"\nCandidate #{i} (ID: {scores['candidate_id']}):")
         print(f"  Final Score:      {scores['final_score']:.4f}")
