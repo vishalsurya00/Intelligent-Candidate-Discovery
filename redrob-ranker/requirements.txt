@@ -1,6 +1,5 @@
-pandas
-tqdm
 streamlit
-scikit-learn
+pandas
 numpy
-psutil
+scikit-learn
+tqdm
