@@ -2,10 +2,10 @@
 loader.py: Data loader module for candidate records.
 
 This module contains the CandidateLoader class which is responsible for loading 
-candidate profile data from a JSON Lines (.jsonl) file format. It tracks statistics 
-about loading time, memory consumption delta, processes the data line-by-line 
-to minimize memory overhead, and safely skips malformed JSON records while emitting 
-warnings.
+candidate profile data from JSON, JSON Lines (.jsonl), or gzipped (.gz) file formats.
+It tracks statistics about loading time, memory consumption delta, and processes 
+the data line-by-line using streaming to minimize memory overhead. It also safely 
+skips malformed JSON records while emitting warnings.
 """
 
 import os
@@ -13,6 +13,8 @@ import sys
 import time
 import json
 import warnings
+import gzip
+from pathlib import Path
 
 def get_process_memory_mb() -> float:
     """
@@ -67,115 +69,246 @@ def get_process_memory_mb() -> float:
 
 class CandidateLoader:
     """
-    Loader class for streaming and parsing candidate profiles from JSONL format.
+    Loader class for streaming and parsing candidate profiles from JSONL and JSON format.
 
-    Why: Simplifies data ingestion pipelines for downstream scoring and ranking modules, 
-    ensures error isolation via JSON decode safety, and monitors compute resource usage.
+    Why: Handles files of various formats (plain JSON, JSONL, and gzipped JSONL) with high memory
+    efficiency via streaming, ensuring robustness and isolation of JSON decode errors.
     """
 
     def __init__(self, file_path: str):
         """
-        Initializes the CandidateLoader instance.
+        Initializes the CandidateLoader instance and auto-detects file format.
 
         Args:
-            file_path (str): The system path to the .jsonl candidate file.
+            file_path (str): The system path to the .jsonl, .json, or .gz candidate file.
 
-        Why: Configures the file source for subsequent read operations.
+        Why: Configures the file source for subsequent read operations and detects compression format.
         """
         self.file_path = file_path
+        
+        # Auto-detect file format based on extension
+        path_str = str(file_path)
+        if path_str.endswith(".gz"):
+            self.is_gzipped = True
+            print("Detected format: gzipped JSONL")
+        elif path_str.endswith(".jsonl") or path_str.endswith(".json"):
+            self.is_gzipped = False
+            print("Detected format: plain JSONL/JSON")
+        else:
+            self.is_gzipped = False
+            print("Detected format: plain JSONL/JSON")
 
-    def _load_data(self, limit: int = None) -> list:
+    def _print_stats(self):
         """
-        A private helper method to open, stream, parse, and measure resources during ingestion.
+        Prints detailed statistics about the candidate data loading process, including
+        format detection, estimated file size, and memory usage.
 
-        Args:
-            limit (int, optional): The maximum number of valid records to load. 
-                                   If None, all records are loaded.
+        Why: Provides insights on the performance and resource efficiency of the data ingestion.
+        """
+        # Determine file format string
+        format_str = "gzipped JSONL" if self.is_gzipped else "plain JSONL/JSON"
+        
+        # Estimate file size in MB
+        try:
+            file_size_bytes = os.path.getsize(self.file_path)
+            file_size_mb = file_size_bytes / (1024.0 * 1024.0)
+        except Exception:
+            file_size_mb = 0.0
+            
+        # Get properties from self or default if they haven't been run/set
+        loaded = getattr(self, "loaded_count", 0)
+        skipped = getattr(self, "skipped_count", 0)
+        elapsed = getattr(self, "elapsed_time", 0.0)
+        before_mem = getattr(self, "start_memory", 0.0)
+        after_mem = getattr(self, "end_memory", 0.0)
+        delta_mem = getattr(self, "memory_delta", 0.0)
+        is_streaming = getattr(self, "streaming", True)
+        
+        streaming_str = "Yes" if is_streaming else "No"
+        
+        print("\n--- Candidate Loading Statistics ---")
+        print(f"File Path: {self.file_path}")
+        print(f"File Format: {format_str}")
+        print(f"Estimated File Size: {file_size_mb:.2f} MB")
+        print(f"Used Streaming Mode: {streaming_str}")
+        print(f"Candidates Loaded: {loaded}")
+        print(f"Malformed Lines Skipped: {skipped}")
+        print(f"Total Load Time: {elapsed:.4f} seconds")
+        print(f"Memory Usage: Before = {before_mem:.2f} MB | After = {after_mem:.2f} MB | Delta = {delta_mem:.2f} MB")
+        print("------------------------------------\n")
 
-        Raises:
-            FileNotFoundError: If the configured file_path does not exist.
+    def load_all(self) -> list:
+        """
+        Loads all candidate profiles from the file using a streaming approach if JSONL,
+        or full file parsing if a JSON array format.
 
         Returns:
             list: A list of dicts representing parsed candidate profiles.
 
-        Why: Consolidates common reading logic, resource usage calculations, 
-             and JSON warning management to prevent code duplication.
+        Why: Provides memory-efficient ingestion for large JSONL files, while remaining compatible
+             with JSON array formats.
         """
-        if not os.path.exists(self.file_path):
-            raise FileNotFoundError(f"Candidate file not found: {self.file_path}")
-
         start_time = time.perf_counter()
         start_memory = get_process_memory_mb()
-
+        
         candidates = []
-        processed_count = 0
-        malformed_count = 0
-
-        with open(self.file_path, "r", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, start=1):
-                clean_line = line.strip()
-                if not clean_line:
-                    continue  # Skip empty or whitespace-only lines
-
+        skipped = 0
+        
+        # Check if file exists first to avoid unhandled errors
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"Candidate file not found: {self.file_path}")
+        
+        # Auto-select open function based on format detection
+        open_func = gzip.open if self.is_gzipped else open
+        mode = "rt" if self.is_gzipped else "r"
+        
+        # We track whether we used streaming mode
+        self.streaming = True
+        
+        with open_func(self.file_path, mode, encoding="utf-8") as f:
+            # Handle both .jsonl (one per line) 
+            # AND .json (array format like sample_candidates.json)
+            
+            # Read first character to check if it's a JSON array format (starts with '[')
+            first_char = f.read(1)
+            f.seek(0)  # reset to beginning
+            
+            if first_char == "[":
+                # JSON array format (like sample_candidates.json)
+                self.streaming = False
                 try:
-                    candidate = json.loads(clean_line)
-                    candidates.append(candidate)
-                    processed_count += 1
-
-                    # Print progress every 10,000 processed records
-                    if processed_count % 10000 == 0:
-                        print(f"[Progress] Processed {processed_count} lines. "
-                              f"Successfully loaded {len(candidates)} candidates.")
-
-                    if limit is not None and len(candidates) >= limit:
-                        break
+                    data = json.load(f)
+                    candidates = data if isinstance(data, list) else [data]
                 except json.JSONDecodeError as e:
-                    malformed_count += 1
-                    warnings.warn(
-                        f"Malformed line {line_num} in {self.file_path} was skipped. Error: {e}",
-                        UserWarning
-                    )
-
-        end_time = time.perf_counter()
-        end_memory = get_process_memory_mb()
-
-        elapsed_time = end_time - start_time
-        memory_delta = end_memory - start_memory
-
-        print("\n--- Candidate Loading Statistics ---")
-        print(f"File Path: {self.file_path}")
-        print(f"Candidates Loaded: {len(candidates)}")
-        print(f"Malformed Lines Skipped: {malformed_count}")
-        print(f"Total Load Time: {elapsed_time:.4f} seconds")
-        print(f"Memory Usage: Before = {start_memory:.2f} MB | After = {end_memory:.2f} MB | Delta = {memory_delta:.2f} MB")
-        print("------------------------------------\n")
-
+                    warnings.warn(f"Failed to parse JSON array: {e}")
+            else:
+                # JSONL format — read line by line (memory efficient)
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        candidates.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        warnings.warn(
+                            f"Malformed line {line_num} in {self.file_path} "
+                            f"was skipped. Error: {e}"
+                        )
+                        skipped += 1
+                    
+                    # Progress log every 10,000 lines
+                    if line_num % 10000 == 0:
+                        print(f"[Progress] Processed {line_num} lines. "
+                              f"Successfully loaded {len(candidates)} candidates.")
+        
+        self.skipped_count = skipped
+        self.loaded_count = len(candidates)
+        
+        # Measure elapsed time and memory delta for stats reporting
+        self.elapsed_time = time.perf_counter() - start_time
+        self.start_memory = start_memory
+        self.end_memory = get_process_memory_mb()
+        self.memory_delta = self.end_memory - start_memory
+        
+        self._print_stats()
         return candidates
-
-    def load_all(self) -> list:
-        """
-        Loads all candidate profiles from the JSONL file.
-
-        Returns:
-            list: A list of all parsed candidate dictionaries.
-
-        Why: Offers a clean, high-level API to retrieve the entire candidate dataset.
-        """
-        return self._load_data()
 
     def load_sample(self, n: int = 50) -> list:
         """
-        Loads the first n candidate profiles from the JSONL file.
+        Loads the first n candidate profiles from the file using the streaming approach.
 
         Args:
-            n (int): The number of candidate profiles to load. Default is 50.
+            n (int): The maximum number of candidate profiles to load. Default is 50.
 
         Returns:
             list: A list of the first n parsed candidate dictionaries.
 
-        Why: Allows quick data previewing, testing, and memory-saving experimentation.
+        Why: Allows quick data previewing, testing, and memory-saving experimentation on both
+             gzipped and plain formats.
         """
-        return self._load_data(limit=n)
+        candidates = []
+        
+        # Check if file exists first to avoid unhandled errors
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"Candidate file not found: {self.file_path}")
+            
+        open_func = gzip.open if self.is_gzipped else open
+        mode = "rt" if self.is_gzipped else "r"
+        
+        with open_func(self.file_path, mode, encoding="utf-8") as f:
+            # Read first character to check for JSON array format
+            first_char = f.read(1)
+            f.seek(0)
+            
+            if first_char == "[":
+                # JSON array format — load entire array and slice first n elements
+                try:
+                    data = json.load(f)
+                    candidates = (data if isinstance(data, list) else [data])[:n]
+                except json.JSONDecodeError as e:
+                    warnings.warn(f"Failed to parse JSON array in load_sample: {e}")
+            else:
+                # JSONL format — stream line-by-line and stop as soon as we have n candidates
+                for line in f:
+                    if len(candidates) >= n:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        candidates.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        
+        return candidates
+
+    def get_candidate_ids(self) -> set:
+        """
+        Returns just the set of all candidate_ids from the dataset without loading full profiles.
+
+        Returns:
+            set: A set of candidate ID strings.
+
+        Why: Extremely useful for validating output submission files against valid IDs
+             efficiently without high memory footprint.
+        """
+        ids = set()
+        
+        # Check if file exists first to avoid unhandled errors
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"Candidate file not found: {self.file_path}")
+            
+        open_func = gzip.open if self.is_gzipped else open
+        mode = "rt" if self.is_gzipped else "r"
+        
+        with open_func(self.file_path, mode, encoding="utf-8") as f:
+            # Read first character to check for JSON array format
+            first_char = f.read(1)
+            f.seek(0)
+            
+            if first_char == "[":
+                # JSON array format — load full JSON to retrieve IDs
+                try:
+                    data = json.load(f)
+                    candidates = data if isinstance(data, list) else [data]
+                    for cand in candidates:
+                        if isinstance(cand, dict):
+                            ids.add(cand.get("candidate_id", ""))
+                except json.JSONDecodeError as e:
+                    warnings.warn(f"Failed to parse JSON array in get_candidate_ids: {e}")
+            else:
+                # JSONL format — stream line-by-line, extracting candidate_id only
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("["):
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            ids.add(obj.get("candidate_id", ""))
+                    except json.JSONDecodeError:
+                        continue
+        return ids
 
 
 if __name__ == "__main__":
@@ -197,20 +330,22 @@ if __name__ == "__main__":
     # Resolve path to the sample candidate file in the same directory
     current_dir = os.path.dirname(os.path.abspath(__file__))
     sample_file_path = os.path.join(current_dir, "sample_candidates.json")
+    gzipped_file_path = sample_file_path + ".gz"
 
-    # Force regeneration if file doesn't exist or lacks the new 'start_date' fields
+    # Always generate/regenerate if either file is missing or if we want to ensure format compliance
     regenerate = True
-    if os.path.exists(sample_file_path):
+    if os.path.exists(sample_file_path) and os.path.exists(gzipped_file_path):
+        # Check if sample_candidates.json is a JSON array
         try:
             with open(sample_file_path, "r", encoding="utf-8") as f:
-                first_line = f.readline()
-                if "start_date" in first_line:
+                first_char = f.read(1)
+                if first_char == "[":
                     regenerate = False
         except Exception:
             pass
 
     if regenerate:
-        print(f"Generating updated {sample_file_path} with job timelines and mock honeypots...")
+        print(f"Generating mock candidates to test both JSON array and gzipped formats...")
         
         titles = [
             "Software Engineer", "Senior Software Engineer", "Tech Lead",
@@ -338,7 +473,6 @@ if __name__ == "__main__":
         # 2. Inject 5 mock Honeypot candidates
 
         # Honeypot 1: Timeline Impossibility (CAND_0000046)
-        # Claims 60 months, but dates only show 5 months
         dummy_candidates.append({
             "candidate_id": "CAND_0000046",
             "profile": {"years_of_experience": 6.5, "current_title": "Senior AI Engineer", "location": "Pune", "country": "India"},
@@ -359,7 +493,6 @@ if __name__ == "__main__":
         })
 
         # Honeypot 2: Skill Fraud (CAND_0000047)
-        # Over 3 expert skills with 0 endorsements and <3 duration
         dummy_candidates.append({
             "candidate_id": "CAND_0000047",
             "profile": {"years_of_experience": 5.0, "current_title": "AI Engineer", "location": "Noida", "country": "India"},
@@ -385,7 +518,6 @@ if __name__ == "__main__":
         })
 
         # Honeypot 3: Experience Mismatch (CAND_0000048)
-        # Claims 15 years, but history totals 1 year
         dummy_candidates.append({
             "candidate_id": "CAND_0000048",
             "profile": {"years_of_experience": 15.0, "current_title": "Tech Lead", "location": "Bangalore", "country": "India"},
@@ -406,7 +538,6 @@ if __name__ == "__main__":
         })
 
         # Honeypot 4: Title-Skill Mismatch (CAND_0000049)
-        # 5 AI skills, but all roles are non-tech (Marketing/Sales)
         dummy_candidates.append({
             "candidate_id": "CAND_0000049",
             "profile": {"years_of_experience": 8.0, "current_title": "Marketing Manager", "location": "Hyderabad", "country": "India"},
@@ -443,7 +574,6 @@ if __name__ == "__main__":
         })
 
         # Honeypot 5: Multiple Flags (CAND_0000050)
-        # Has > 20 skills (25) and experience mismatch
         dummy_candidates.append({
             "candidate_id": "CAND_0000050",
             "profile": {"years_of_experience": 12.0, "current_title": "Product Owner", "location": "Mumbai", "country": "India"},
@@ -463,45 +593,55 @@ if __name__ == "__main__":
             "redrob_signals": {"open_to_work_flag": False, "last_active_date": "2026-06-18", "recruiter_response_rate": 0.9, "notice_period_days": 60, "github_activity_score": 10, "interview_completion_rate": 0.95}
         })
 
-        # Write out to sample file
+        # Write to sample_candidates.json as a JSON array format
         with open(sample_file_path, "w", encoding="utf-8") as f:
+            json.dump(dummy_candidates, f, indent=2)
+        print(f"Successfully generated {sample_file_path} in JSON array format.")
+
+        # Write to sample_candidates.json.gz as a gzipped JSONL format with a malformed line
+        with gzip.open(gzipped_file_path, "wt", encoding="utf-8") as f:
             for cand in dummy_candidates:
                 f.write(json.dumps(cand) + "\n")
-                
-        # Append a malformed line at the very end to test warnings handling capability
-        with open(sample_file_path, "a", encoding="utf-8") as f:
             f.write("{malformed json string, key:value}\n")
+        print(f"Successfully generated {gzipped_file_path} in gzipped JSONL format with a malformed line.")
 
-        print(f"Successfully generated {len(dummy_candidates)} valid mock candidates "
-              f"and 1 malformed line in {sample_file_path}.")
-
-    # Initialize loader and run verification tests
-    print("\nInitializing CandidateLoader...")
-    loader = CandidateLoader(sample_file_path)
-
-    print("Executing load_all()...")
-    loaded_candidates = loader.load_all()
-
-    # Verify that exactly 50 candidates were loaded successfully (skipping the malformed line)
-    assert len(loaded_candidates) == 50, f"Expected 50 candidates to load, got {len(loaded_candidates)}"
-    print("[Verification] Assertion Passed: Loaded exactly 50 candidates successfully!")
-
-    # Print attributes of the first 3 candidates as requested
-    print("\n--- Displaying Attributes for the First 3 Candidates ---")
-    for i, candidate in enumerate(loaded_candidates[:3], start=1):
-        cand_id = candidate.get("candidate_id", "N/A")
+    # Run verification tests on both formats
+    for path, description in [(sample_file_path, "JSON array format"), (gzipped_file_path, "gzipped JSONL format")]:
+        print(f"\n================ Testing format: {description} ================")
         
-        profile = candidate.get("profile", {})
-        title = profile.get("current_title", "N/A")
-        years_exp = profile.get("years_of_experience", "N/A")
+        # This will test __init__ and print format detection info
+        loader = CandidateLoader(path)
         
-        signals = candidate.get("redrob_signals", {})
-        open_to_work = signals.get("open_to_work_flag", "N/A")
-
-        print(f"Candidate {i}:")
-        print(f"  candidate_id:             {cand_id}")
-        print(f"  profile.current_title:    {title}")
-        print(f"  profile.years_experience: {years_exp}")
-        print(f"  signals.open_to_work:     {open_to_work}")
+        # 1. Load all candidates
+        print(f"Executing load_all() on {os.path.basename(path)}...")
+        candidates = loader.load_all()
+        
+        # Verify candidate counts
+        expected_count = 50
+        assert len(candidates) == expected_count, f"Expected {expected_count} candidates, got {len(candidates)}"
+        print(f"[Verification] Assertion Passed: Loaded exactly {len(candidates)} candidates successfully!")
+        
+        # 2. Print first 3 candidate IDs and titles
+        print("\n--- Displaying Attributes for the First 3 Candidates ---")
+        for i, candidate in enumerate(candidates[:3], start=1):
+            cand_id = candidate.get("candidate_id", "N/A")
+            profile = candidate.get("profile", {})
+            title = profile.get("current_title", "N/A")
+            print(f"  Candidate {i}: ID = {cand_id} | Title = {title}")
         print("-" * 50)
-
+        
+        # 3. Stats printed automatically via load_all() showing format detection worked
+        
+        # 4. Test load_sample(n=5) and print result count
+        print(f"\nExecuting load_sample(n=5) on {os.path.basename(path)}...")
+        sampled = loader.load_sample(n=5)
+        print(f"Successfully loaded {len(sampled)} sample candidates.")
+        assert len(sampled) == 5, f"Expected 5 candidates, got {len(sampled)}"
+        print("  Sample IDs:", [c.get("candidate_id") for c in sampled])
+        
+        # Test get_candidate_ids()
+        print(f"\nExecuting get_candidate_ids() on {os.path.basename(path)}...")
+        ids = loader.get_candidate_ids()
+        print(f"Total candidate IDs retrieved: {len(ids)}")
+        print("  Sample IDs in set:", sorted(list(ids))[:5])
+        print("========================================================\n")
