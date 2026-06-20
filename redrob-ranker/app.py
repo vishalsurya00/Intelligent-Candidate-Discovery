@@ -360,16 +360,9 @@ def run_pipeline(candidates: list) -> dict:
     scored_results = []
     honeypot_results = []
 
-    for i, candidate in enumerate(candidates):
+    for candidate in candidates:
         cand_id = candidate.get("candidate_id", "Unknown")
 
-        # STEP 2a: Print type(candidate) and list(candidate.keys()) for the first candidate
-        if i == 0:
-            st.write(f"DEBUG type(candidate) = {type(candidate)}")
-            st.write(f"DEBUG candidate keys = {list(candidate.keys())}")
-            st.write("DEBUG first candidate raw:", candidate)
-
-        # STEP 2c: Try/except block with detailed exception reporting for is_honeypot
         try:
             honeypot_result = detector.is_honeypot(candidate)
         except Exception as e:
@@ -440,14 +433,6 @@ def run_pipeline(candidates: list) -> dict:
 
     # Sort: final_score descending, candidate_id ascending for tiebreak
     scored_results.sort(key=lambda x: (-x["final_score"], x["candidate_id"]))
-
-    st.write("DEBUG: All honeypot_score values:", 
-              [r['honeypot_result']['honeypot_score'] for r in scored_results 
-               if 'honeypot_result' in r])
-
-    st.write("DEBUG: Candidates flagged as True:", 
-              [r['candidate_id'] for r in scored_results 
-               if r.get('honeypot_result', {}).get('is_honeypot') == True])
 
     return {
         "all_results": scored_results,
@@ -548,30 +533,6 @@ if uploaded_file is not None:
     else:
         st.success(f"✅ File loaded: **{len(candidates)}** candidates found")
 
-        target_ids = ["CAND_0000046", "CAND_0000047", "CAND_0000048", 
-                      "CAND_0000049", "CAND_0000050"]
-
-        for cand in candidates:
-            if cand.get("candidate_id") in target_ids:
-                st.write(f"FOUND {cand['candidate_id']} in parsed list")
-                st.json(cand)  # show the FULL raw dict as parsed by app.py
-                
-                # Now manually run honeypot checks on it right here, 
-                # not in the main loop, to isolate the issue:
-                detector = HoneypotDetector()
-                result = detector.is_honeypot(cand)
-                st.write(f"Manual honeypot check on {cand['candidate_id']}: {result}")
-
-        if not any(c.get("candidate_id") in target_ids for c in candidates):
-            st.error("CRITICAL: None of CAND_0000046-50 found in parsed "
-                      "candidate list! File parsing is dropping or "
-                      "renaming candidates.")
-
-        # Also add a simple length/order check right after parsing:
-        st.write(f"DEBUG: Total candidates parsed = {len(candidates)}")
-        st.write(f"DEBUG: First candidate_id = {candidates[0].get('candidate_id')}")
-        st.write(f"DEBUG: Last candidate_id = {candidates[-1].get('candidate_id')}")
-
         # Preview table of first 5 candidates
         preview_rows = []
         for c in candidates[:5]:
@@ -598,7 +559,6 @@ if uploaded_file is not None:
         if run_clicked:
             with st.spinner("🔍 Scoring candidates and detecting honeypots..."):
                 results = run_pipeline(candidates)
-                st.info(f"Honeypot check ran on {results['total']} candidates, {results['honeypot_count']} flagged")
                 st.session_state["pipeline_results"] = results
                 st.session_state["ran"] = True
 
