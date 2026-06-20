@@ -383,11 +383,6 @@ def run_pipeline(candidates: list) -> dict:
                 "flags": []
             }
 
-        # STEP 1: Debug print candidate-level result for first 3 candidates
-        if i < 3:
-            st.write(f"DEBUG candidate {cand_id}: "
-                     f"is_honeypot result = {honeypot_result}")
-
         try:
             if honeypot_result.get("is_honeypot") or honeypot_result.get("flagged"):
                 honeypot_result["is_honeypot"] = True
@@ -445,6 +440,14 @@ def run_pipeline(candidates: list) -> dict:
 
     # Sort: final_score descending, candidate_id ascending for tiebreak
     scored_results.sort(key=lambda x: (-x["final_score"], x["candidate_id"]))
+
+    st.write("DEBUG: All honeypot_score values:", 
+              [r['honeypot_result']['honeypot_score'] for r in scored_results 
+               if 'honeypot_result' in r])
+
+    st.write("DEBUG: Candidates flagged as True:", 
+              [r['candidate_id'] for r in scored_results 
+               if r.get('honeypot_result', {}).get('is_honeypot') == True])
 
     return {
         "all_results": scored_results,
