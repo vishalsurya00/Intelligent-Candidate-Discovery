@@ -12,6 +12,7 @@ import csv
 import sys
 import time
 import argparse
+import re
 from tqdm import tqdm
 
 # Import candidate data handling components
@@ -69,6 +70,22 @@ class CandidateRanker:
         print(f"Stage 1: Loaded {len(candidates)} candidates in {stage1_time:.4f} seconds")
 
         # -------------------------------------------------------------
+        # STAGE 1.5: ID Cross-Check
+        # -------------------------------------------------------------
+        stage1_5_start = time.perf_counter()
+        print("\n--- Stage 1.5: Running ID Cross-Check ---")
+        invalid_id_count = 0
+        id_pattern = re.compile(r"^CAND_[0-9]{7}$")
+        for idx, candidate in enumerate(candidates):
+            cand_id = candidate.get("candidate_id", "")
+            if not isinstance(cand_id, str) or not id_pattern.match(cand_id):
+                invalid_id_count += 1
+                warnings.warn(f"Invalid candidate_id format found at record {idx+1}: {cand_id}")
+        
+        stage1_5_time = time.perf_counter() - stage1_5_start
+        print(f"Stage 1.5: ID Cross-Check completed in {stage1_5_time:.4f} seconds. Invalid candidate IDs found: {invalid_id_count}")
+
+        # -------------------------------------------------------------
         # STAGE 2: Score + honeypot check (combined loop for speed)
         # -------------------------------------------------------------
         stage2_start = time.perf_counter()
@@ -97,6 +114,7 @@ class CandidateRanker:
                         "experience_score": 0.0,
                         "behavioral_score": 0.0,
                         "location_score": 0.0,
+                        "certifications_score": 0.0,
                         "reasoning": f"DISQUALIFIED: {flags_joined}"
                     }
                 else:
@@ -112,6 +130,7 @@ class CandidateRanker:
                     "experience_score": 0.0,
                     "behavioral_score": 0.0,
                     "location_score": 0.0,
+                    "certifications_score": 0.0,
                     "reasoning": "ERROR: could not score"
                 }
 

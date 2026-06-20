@@ -214,9 +214,71 @@ class HoneypotDetector:
 
         return {"flagged": False, "reason": ""}
 
+    def check_assessment_mismatch(self, candidate: dict) -> dict:
+        """
+        Detects candidates whose self-reported skill proficiency contradicts
+        their platform-verified skill_assessment_scores.
+
+        Args:
+            candidate (dict): The candidate profile data.
+
+        Returns:
+            dict: A dictionary with 'flagged' (bool) and 'reason' (str).
+
+        Why: Ensures claims of 'expert' or 'advanced' proficiency are validated
+             by platform assessment tests.
+        """
+        try:
+            signals = candidate.get("redrob_signals", {})
+            skill_assessment_scores = signals.get("skill_assessment_scores", {})
+            if not skill_assessment_scores:
+                return {"flagged": False, "reason": ""}
+
+            skills = candidate.get("skills", [])
+            contradictions = 0
+            details = []
+
+            for s in skills:
+                name_orig = s.get("name", "")
+                name_lower = name_orig.lower().strip()
+                proficiency = s.get("proficiency", "").lower().strip()
+
+                # Find matching assessment score case-insensitively
+                matched_score = None
+                if name_orig in skill_assessment_scores:
+                    matched_score = skill_assessment_scores[name_orig]
+                else:
+                    for k, v in skill_assessment_scores.items():
+                        if k.lower().strip() == name_lower:
+                            matched_score = v
+                            break
+
+                if matched_score is not None:
+                    try:
+                        score_val = float(matched_score)
+                        if proficiency == "expert" and score_val < 30:
+                            contradictions += 1
+                            details.append(f"{name_orig} (expert vs score {score_val})")
+                        elif proficiency == "advanced" and score_val < 20:
+                            contradictions += 1
+                            details.append(f"{name_orig} (advanced vs score {score_val})")
+                    except ValueError:
+                        pass
+
+            if contradictions >= 2:
+                details_str = ", ".join(details)
+                return {
+                    "flagged": True,
+                    "reason": f"Assessment Mismatch: Found {contradictions} proficiency contradictions: {details_str}."
+                }
+        except Exception:
+            pass
+
+        return {"flagged": False, "reason": ""}
+
     def is_honeypot(self, candidate: dict) -> dict:
         """
-        Executes all 4 honeypot detection heuristics and returns the verdict.
+        Executes all 5 honeypot detection heuristics and returns the verdict.
 
         Args:
             candidate (dict): The candidate profile data.
@@ -233,6 +295,7 @@ class HoneypotDetector:
         skill_check = self.check_skill_fraud(candidate)
         experience_check = self.check_experience_mismatch(candidate)
         title_check = self.check_title_skill_mismatch(candidate)
+        assessment_check = self.check_assessment_mismatch(candidate)
 
         # Accumulate flag reasons
         flags = []
@@ -244,10 +307,12 @@ class HoneypotDetector:
             flags.append(experience_check.get("reason"))
         if title_check.get("flagged"):
             flags.append(title_check.get("reason"))
+        if assessment_check.get("flagged"):
+            flags.append(assessment_check.get("reason"))
 
         flagged_count = len(flags)
         is_fake = flagged_count > 0
-        honeypot_score = flagged_count / 4.0
+        honeypot_score = flagged_count / 5.0
 
         return {
             "candidate_id": candidate_id,

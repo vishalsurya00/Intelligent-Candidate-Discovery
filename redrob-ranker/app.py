@@ -183,29 +183,32 @@ with st.sidebar:
     st.markdown("**Scoring Weights**")
 
     weights_html = """
-    <div class="sidebar-weight"><span class="label">Skills Match</span><span class="value">35%</span></div>
-    <div class="sidebar-weight"><span class="label">Career Quality</span><span class="value">25%</span></div>
-    <div class="sidebar-weight"><span class="label">Experience Fit</span><span class="value">15%</span></div>
-    <div class="sidebar-weight"><span class="label">Behavioral Signals</span><span class="value">15%</span></div>
-    <div class="sidebar-weight" style="border-bottom:none;"><span class="label">Location + Education</span><span class="value">10%</span></div>
+    <div class="sidebar-weight"><span class="label">Skills Match</span><span class="value">30%</span></div>
+    <div class="sidebar-weight"><span class="label">Career Quality</span><span class="value">28%</span></div>
+    <div class="sidebar-weight"><span class="label">Experience Fit</span><span class="value">12%</span></div>
+    <div class="sidebar-weight"><span class="label">Behavioral Signals</span><span class="value">20%</span></div>
+    <div class="sidebar-weight"><span class="label">Location Fit</span><span class="value">7%</span></div>
+    <div class="sidebar-weight" style="border-bottom:none;"><span class="label">Certifications</span><span class="value">3%</span></div>
     """
     st.markdown(weights_html, unsafe_allow_html=True)
     st.markdown("")
 
     with st.expander("ℹ️ How it works"):
         st.markdown("""
-**5 Scoring Components:**
-- **Skills Match (35%)** — Matches candidate skills against MUST_HAVE (Python, embeddings, vector DBs, NLP, transformers) and NICE_TO_HAVE lists. Uses a *trust multiplier* based on endorsements, proficiency, and usage duration to penalize keyword stuffing.
-- **Career Quality (25%)** — Rewards product-company experience in tech/AI industries. Penalizes candidates who spent >60% of career at consulting firms (TCS, Infosys, Wipro, etc.).
-- **Experience Fit (15%)** — Ideal range is **5–9 years**. Scores peak at 1.0 for this range and taper off for junior or very senior profiles.
-- **Behavioral Signals (15%)** — Evaluates recency of activity, recruiter response rate, notice period, interview completion rate, and GitHub activity. Bonus for open-to-work candidates.
-- **Location (10%)** — Prefers Pune, Noida, Hyderabad, Mumbai, Delhi NCR, Bangalore, Chennai. Lower scores for non-India locations.
+**6 Scoring Components:**
+- **Skills Match (30%)** — Matches candidate skills against MUST_HAVE (Python, embeddings, vector DBs, NLP, transformers) and NICE_TO_HAVE lists. Uses a *trust multiplier* based on endorsements, proficiency, and usage duration to penalize keyword stuffing.
+- **Career Quality (28%)** — Rewards product-company experience in tech/AI industries. Penalizes candidates who spent >60% of career at consulting firms (TCS, Infosys, Wipro, etc.).
+- **Experience Fit (12%)** — Ideal range is **5–9 years**. Scores peak at 1.0 for this range and taper off for junior or very senior profiles.
+- **Behavioral Signals (20%)** — Evaluates recency of activity, recruiter response rate, notice period, interview completion rate, and GitHub activity.
+- **Location (7%)** — Prefers Pune, Noida, Hyderabad, Mumbai, Delhi NCR, Bangalore, Chennai. Lower scores for non-India locations.
+- **Certifications (3%)** — Rewards relevant certifications in AI/ML or cloud architectures.
 
 **Honeypot Detection:**
 - ⏱️ **Timeline Check** — Flags impossible date-duration gaps
 - 🎭 **Skill Fraud** — Catches zero-duration expert claims
 - 📊 **Experience Mismatch** — Detects inflated years
 - 🔀 **Title Mismatch** — Flags AI skills on non-tech titles
+- 📝 **Assessment Mismatch** — Flags self-reported expert/advanced skills that contradict platform test results
         """)
 
     st.markdown("---")
@@ -290,6 +293,7 @@ def run_pipeline(candidates: list) -> dict:
                     "experience_score": 0.0,
                     "behavioral_score": 0.0,
                     "location_score": 0.0,
+                    "certifications_score": 0.0,
                     "reasoning": f"DISQUALIFIED: {flags_joined}",
                     "is_honeypot": True,
                     # Carry forward profile fields for display
@@ -314,6 +318,7 @@ def run_pipeline(candidates: list) -> dict:
                 "experience_score": 0.0,
                 "behavioral_score": 0.0,
                 "location_score": 0.0,
+                "certifications_score": 0.0,
                 "reasoning": "ERROR: could not score",
                 "is_honeypot": False,
                 "current_title": "N/A",
@@ -332,13 +337,14 @@ def run_pipeline(candidates: list) -> dict:
     }
 
 
+
 # ──────────────────────────────────────────────────────────────────────
 # SECTION 3 — File Upload
 # ──────────────────────────────────────────────────────────────────────
 uploaded_file = st.file_uploader(
-    "Upload a candidates file (.json or .jsonl)",
-    type=["json", "jsonl"],
-    help="Use sample_candidates.json from the hackathon bundle to test."
+    "Upload a candidates file (.json, .jsonl, .gz, or .jsonl.gz)",
+    type=["json", "jsonl", "gz"],
+    help="Upload a candidates file (.json, .jsonl, or .jsonl.gz). Streaming-based — handles files of any size."
 )
 
 if uploaded_file is None:
@@ -347,13 +353,13 @@ if uploaded_file is None:
     <div class="upload-zone">
         <h3>📂 Upload a Candidate File to Begin</h3>
         <p>
-            Drag and drop a <code>.json</code> or <code>.jsonl</code> candidate file above, 
+            Drag and drop a <code>.json</code>, <code>.jsonl</code>, or <code>.gz</code> candidate file above, 
             or use the file picker. The app will score every candidate against the 
             <strong>Senior AI Engineer</strong> role, detect honeypot profiles, 
             and generate a ranked submission CSV.
         </p>
         <p style="margin-top:16px; font-size:0.82rem; color:#999;">
-            Supports JSON arrays and JSON Lines format &nbsp;·&nbsp; Up to 100K+ candidates
+            Supports JSON arrays, JSON Lines, and compressed formats &nbsp;·&nbsp; Streaming-based — handles files of any size.
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -366,8 +372,41 @@ if uploaded_file is None:
 # SECTION 4 — File loaded preview
 # ──────────────────────────────────────────────────────────────────────
 if uploaded_file is not None:
-    file_bytes = uploaded_file.read()
-    candidates = parse_candidate_file(file_bytes, uploaded_file.name)
+    import tempfile
+    import gzip
+    import os
+    from loader import CandidateLoader
+
+    try:
+        uploaded_file.seek(0)
+        # Decompress if file is gzipped
+        if uploaded_file.name.endswith(".gz"):
+            with gzip.GzipFile(fileobj=uploaded_file, mode="rb") as gz:
+                decompressed_data = gz.read()
+            # Write to a plain temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl", mode="wb") as temp_f:
+                temp_f.write(decompressed_data)
+                temp_file_path = temp_f.name
+        else:
+            # Write plain bytes directly to temp file
+            file_bytes = uploaded_file.read()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl", mode="wb") as temp_f:
+                temp_f.write(file_bytes)
+                temp_file_path = temp_f.name
+
+        # Load candidates using CandidateLoader
+        loader = CandidateLoader(temp_file_path)
+        candidates = loader.load_all()
+    except Exception as e:
+        st.error(f"❌ Error parsing candidate file: {e}")
+        candidates = []
+    finally:
+        # Clean up temp file
+        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
     if not candidates:
         st.error("❌ No valid candidates found in the uploaded file. Please check the format.")
@@ -497,6 +536,7 @@ if uploaded_file is not None:
                             "Experience": round(r["experience_score"], 4),
                             "Behavioral": round(r["behavioral_score"], 4),
                             "Location": round(r["location_score"], 4),
+                            "Certifications": round(r["certifications_score"], 4),
                         })
 
                     df_breakdown = pd.DataFrame(breakdown_rows)
@@ -505,16 +545,17 @@ if uploaded_file is not None:
 
                     # Metric cards
                     st.markdown("#### Average Scores (Top 10)")
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
 
                     avg_skills = sum(r["skills_score"] for r in top10) / len(top10)
                     avg_career = sum(r["career_score"] for r in top10) / len(top10)
                     avg_behav = sum(r["behavioral_score"] for r in top10) / len(top10)
+                    avg_certs = sum(r["certifications_score"] for r in top10) / len(top10)
 
                     with col1:
                         st.markdown(f"""
                         <div class="metric-card">
-                            <h3>Skills Score</h3>
+                            <h3>Skills</h3>
                             <div class="metric-value">{avg_skills:.4f}</div>
                         </div>
                         """, unsafe_allow_html=True)
@@ -522,7 +563,7 @@ if uploaded_file is not None:
                     with col2:
                         st.markdown(f"""
                         <div class="metric-card">
-                            <h3>Career Score</h3>
+                            <h3>Career</h3>
                             <div class="metric-value">{avg_career:.4f}</div>
                         </div>
                         """, unsafe_allow_html=True)
@@ -530,8 +571,16 @@ if uploaded_file is not None:
                     with col3:
                         st.markdown(f"""
                         <div class="metric-card">
-                            <h3>Behavioral Score</h3>
+                            <h3>Behavioral</h3>
                             <div class="metric-value">{avg_behav:.4f}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with col4:
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <h3>Certifications</h3>
+                            <div class="metric-value">{avg_certs:.4f}</div>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -577,7 +626,13 @@ if uploaded_file is not None:
 
                     # Show detection breakdown
                     st.markdown("#### Detection Method Summary")
-                    method_counts = {"Timeline": 0, "Skill Fraud": 0, "Experience": 0, "Title Mismatch": 0}
+                    method_counts = {
+                        "Timeline": 0,
+                        "Skill Fraud": 0,
+                        "Experience": 0,
+                        "Title Mismatch": 0,
+                        "Assessment Mismatch": 0
+                    }
                     for h in honeypots:
                         for flag in h["flags"]:
                             flag_lower = flag.lower()
@@ -589,6 +644,8 @@ if uploaded_file is not None:
                                 method_counts["Experience"] += 1
                             elif "title" in flag_lower:
                                 method_counts["Title Mismatch"] += 1
+                            elif "assessment" in flag_lower:
+                                method_counts["Assessment Mismatch"] += 1
 
                     method_df = pd.DataFrame([
                         {"Method": k, "Detections": v} for k, v in method_counts.items() if v > 0
