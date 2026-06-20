@@ -355,17 +355,42 @@ def run_pipeline(candidates: list) -> dict:
               sorted_results, and summary statistics.
     """
     scorer = CandidateScorer()
+    detector = HoneypotDetector()
 
     scored_results = []
     honeypot_results = []
 
-    for candidate in candidates:
-        try:
-            detector = HoneypotDetector()
-            cand_id = candidate.get("candidate_id", "Unknown")
-            honeypot_result = detector.is_honeypot(candidate)
+    for i, candidate in enumerate(candidates):
+        cand_id = candidate.get("candidate_id", "Unknown")
 
-            if honeypot_result["is_honeypot"]:
+        # STEP 2a: Print type(candidate) and list(candidate.keys()) for the first candidate
+        if i == 0:
+            st.write(f"DEBUG type(candidate) = {type(candidate)}")
+            st.write(f"DEBUG candidate keys = {list(candidate.keys())}")
+            st.write("DEBUG first candidate raw:", candidate)
+
+        # STEP 2c: Try/except block with detailed exception reporting for is_honeypot
+        try:
+            honeypot_result = detector.is_honeypot(candidate)
+        except Exception as e:
+            st.error(f"Honeypot check failed for "
+                     f"{cand_id}: {type(e).__name__}: {e}")
+            honeypot_result = {
+                "candidate_id": cand_id,
+                "is_honeypot": False,
+                "flagged": False,
+                "honeypot_score": 0.0,
+                "flags": []
+            }
+
+        # STEP 1: Debug print candidate-level result for first 3 candidates
+        if i < 3:
+            st.write(f"DEBUG candidate {cand_id}: "
+                     f"is_honeypot result = {honeypot_result}")
+
+        try:
+            if honeypot_result.get("is_honeypot") or honeypot_result.get("flagged"):
+                honeypot_result["is_honeypot"] = True
                 honeypot_results.append(honeypot_result)
                 flags_joined = "; ".join(honeypot_result["flags"])
                 scored_results.append({
@@ -394,9 +419,10 @@ def run_pipeline(candidates: list) -> dict:
                 score_result["years_exp"] = profile.get("years_of_experience", 0)
                 score_result["location"] = profile.get("location", "N/A")
                 scored_results.append(score_result)
-        except Exception:
+        except Exception as e:
+            st.error(f"Scoring pipeline failed for candidate {cand_id}: {type(e).__name__}: {e}")
             scored_results.append({
-                "candidate_id": candidate.get("candidate_id", "Unknown"),
+                "candidate_id": cand_id,
                 "final_score": 0.0,
                 "skills_score": 0.0,
                 "career_score": 0.0,
@@ -407,7 +433,7 @@ def run_pipeline(candidates: list) -> dict:
                 "reasoning": "ERROR: could not score",
                 "is_honeypot": False,
                 "honeypot_result": {
-                    "candidate_id": candidate.get("candidate_id", "Unknown"),
+                    "candidate_id": cand_id,
                     "is_honeypot": False,
                     "honeypot_score": 0.0,
                     "flags": []
@@ -437,6 +463,21 @@ uploaded_file = st.file_uploader(
     type=["json", "jsonl", "gz"],
     help="Upload a candidates file (.json, .jsonl, or .jsonl.gz). Streaming-based — handles files of any size."
 )
+
+# Check if file has changed or was removed
+current_file_id = None
+if uploaded_file is not None:
+    current_file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+
+if "last_file_id" not in st.session_state:
+    st.session_state["last_file_id"] = None
+
+if current_file_id != st.session_state["last_file_id"]:
+    # Reset all cached result keys
+    for key in ["pipeline_results", "ran", "scored_results", "honeypot_results", "ranking_complete"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state["last_file_id"] = current_file_id
 
 if uploaded_file is None:
     # Friendly placeholder when no file is uploaded
