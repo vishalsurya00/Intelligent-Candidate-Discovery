@@ -548,6 +548,30 @@ if uploaded_file is not None:
     else:
         st.success(f"✅ File loaded: **{len(candidates)}** candidates found")
 
+        target_ids = ["CAND_0000046", "CAND_0000047", "CAND_0000048", 
+                      "CAND_0000049", "CAND_0000050"]
+
+        for cand in candidates:
+            if cand.get("candidate_id") in target_ids:
+                st.write(f"FOUND {cand['candidate_id']} in parsed list")
+                st.json(cand)  # show the FULL raw dict as parsed by app.py
+                
+                # Now manually run honeypot checks on it right here, 
+                # not in the main loop, to isolate the issue:
+                detector = HoneypotDetector()
+                result = detector.is_honeypot(cand)
+                st.write(f"Manual honeypot check on {cand['candidate_id']}: {result}")
+
+        if not any(c.get("candidate_id") in target_ids for c in candidates):
+            st.error("CRITICAL: None of CAND_0000046-50 found in parsed "
+                      "candidate list! File parsing is dropping or "
+                      "renaming candidates.")
+
+        # Also add a simple length/order check right after parsing:
+        st.write(f"DEBUG: Total candidates parsed = {len(candidates)}")
+        st.write(f"DEBUG: First candidate_id = {candidates[0].get('candidate_id')}")
+        st.write(f"DEBUG: Last candidate_id = {candidates[-1].get('candidate_id')}")
+
         # Preview table of first 5 candidates
         preview_rows = []
         for c in candidates[:5]:
