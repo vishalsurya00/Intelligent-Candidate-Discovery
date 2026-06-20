@@ -10,6 +10,7 @@ import io
 import csv
 import json
 import warnings
+import re
 import pandas as pd
 import streamlit as st
 
@@ -174,8 +175,90 @@ st.markdown('<p class="sub-title">Senior AI Engineer — Founding Team</p>', uns
 st.markdown('<span class="hackathon-badge">Redrob Hackathon &nbsp;|&nbsp; Intelligent Candidate Discovery Challenge</span>', unsafe_allow_html=True)
 st.divider()
 
-
 # ──────────────────────────────────────────────────────────────────────
+# SECTION 1.5 — Job Description
+# ──────────────────────────────────────────────────────────────────────
+st.subheader("📋 Job Description")
+jd_text = st.text_area(
+    "Paste Job Description (optional)",
+    placeholder="Paste a job description here to customize scoring, or leave blank to use the default Senior AI Engineer JD.",
+    height=150
+)
+
+uploaded_jd_file = None
+with st.expander("Or upload a JD file"):
+    uploaded_jd_file = st.file_uploader(
+        "Upload a JD file",
+        type=["txt", "md", "docx"],
+        key="jd_file_uploader"
+    )
+
+if uploaded_jd_file is not None:
+    jd_filename = uploaded_jd_file.name.lower()
+    if jd_filename.endswith(".docx"):
+        try:
+            import docx
+            doc = docx.Document(uploaded_jd_file)
+            uploaded_jd_text = "\n".join([p.text for p in doc.paragraphs])
+            jd_text = uploaded_jd_text
+        except Exception as e:
+            st.error(f"Could not parse docx file: {e}")
+    else:
+        try:
+            uploaded_jd_text = uploaded_jd_file.read().decode("utf-8")
+            jd_text = uploaded_jd_text
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+
+if jd_text.strip():
+    # 1. Experience years extraction
+    # Look for years like "5-9 years" or "5 to 9 years"
+    exp_match = re.search(r"(\d+)[\s-]+(?:to|-)[\s]*(\d+)\s*years?", jd_text, re.IGNORECASE)
+    if exp_match:
+        exp_range = f"{exp_match.group(1)}-{exp_match.group(2)} years"
+    else:
+        exp_range = "not specified"
+
+    # 2. Location extraction
+    cities_list = [
+        "pune", "noida", "hyderabad", "mumbai", "delhi", "gurugram", 
+        "gurgaon", "bangalore", "bengaluru", "chennai", "new delhi", "ncr",
+        "kolkata", "ahmedabad", "jaipur", "kochi", "coimbatore", "indore", "bhopal"
+    ]
+    found_cities = []
+    # Check if there is a "location" line
+    location_line = ""
+    for line in jd_text.splitlines():
+        if "location" in line.lower():
+            location_line = line
+            break
+            
+    search_source = location_line if location_line else jd_text
+    for city in cities_list:
+        if re.search(rf"\b{city}\b", search_source, re.IGNORECASE):
+            found_cities.append(city.title())
+            
+    found_cities = list(set(found_cities))
+    location_str = ", ".join(found_cities) if found_cities else "not specified"
+
+    # 3. Skills extraction
+    scorer_instance = CandidateScorer()
+    master_skills = scorer_instance.MUST_HAVE_SKILLS + scorer_instance.NICE_TO_HAVE_SKILLS
+    found_skills = []
+    for skill in master_skills:
+        if re.search(rf"\b{re.escape(skill)}\b", jd_text, re.IGNORECASE):
+            found_skills.append(skill)
+            
+    found_skills = list(set(found_skills))
+    skills_str = ", ".join(found_skills) if found_skills else "none found"
+
+    st.info(f"📋 **Detected requirements:**\n- **Experience:** {exp_range}\n- **Skills:** {skills_str}\n- **Locations:** {location_str}")
+    st.warning("⚠️ **Note:** Custom JD parsing is a preview feature for this demo. Scoring currently uses the hackathon's official JD for accurate evaluation against the competition's grading criteria.")
+else:
+    st.caption("ℹ️ **Using default JD:** Senior AI Engineer — Founding Team (Pune/Noida, 5-9 yrs, retrieval/ranking systems)")
+
+st.divider()
+
 # SECTION 2 — Sidebar
 # ──────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -272,19 +355,19 @@ def run_pipeline(candidates: list) -> dict:
               sorted_results, and summary statistics.
     """
     scorer = CandidateScorer()
-    detector = HoneypotDetector()
 
     scored_results = []
     honeypot_results = []
 
     for candidate in candidates:
         try:
+            detector = HoneypotDetector()
             cand_id = candidate.get("candidate_id", "Unknown")
-            verdict = detector.is_honeypot(candidate)
+            honeypot_result = detector.is_honeypot(candidate)
 
-            if verdict["is_honeypot"]:
-                honeypot_results.append(verdict)
-                flags_joined = "; ".join(verdict["flags"])
+            if honeypot_result["is_honeypot"]:
+                honeypot_results.append(honeypot_result)
+                flags_joined = "; ".join(honeypot_result["flags"])
                 scored_results.append({
                     "candidate_id": cand_id,
                     "final_score": 0.0,
@@ -296,6 +379,7 @@ def run_pipeline(candidates: list) -> dict:
                     "certifications_score": 0.0,
                     "reasoning": f"DISQUALIFIED: {flags_joined}",
                     "is_honeypot": True,
+                    "honeypot_result": honeypot_result,
                     # Carry forward profile fields for display
                     "current_title": candidate.get("profile", {}).get("current_title", "N/A"),
                     "years_exp": candidate.get("profile", {}).get("years_of_experience", 0),
@@ -305,6 +389,7 @@ def run_pipeline(candidates: list) -> dict:
                 score_result = scorer.score(candidate)
                 profile = candidate.get("profile", {})
                 score_result["is_honeypot"] = False
+                score_result["honeypot_result"] = honeypot_result
                 score_result["current_title"] = profile.get("current_title", "N/A")
                 score_result["years_exp"] = profile.get("years_of_experience", 0)
                 score_result["location"] = profile.get("location", "N/A")
@@ -321,6 +406,12 @@ def run_pipeline(candidates: list) -> dict:
                 "certifications_score": 0.0,
                 "reasoning": "ERROR: could not score",
                 "is_honeypot": False,
+                "honeypot_result": {
+                    "candidate_id": candidate.get("candidate_id", "Unknown"),
+                    "is_honeypot": False,
+                    "honeypot_score": 0.0,
+                    "flags": []
+                },
                 "current_title": "N/A",
                 "years_exp": 0,
                 "location": "N/A",
@@ -439,6 +530,7 @@ if uploaded_file is not None:
         if run_clicked:
             with st.spinner("🔍 Scoring candidates and detecting honeypots..."):
                 results = run_pipeline(candidates)
+                st.info(f"Honeypot check ran on {results['total']} candidates, {results['honeypot_count']} flagged")
                 st.session_state["pipeline_results"] = results
                 st.session_state["ran"] = True
 
@@ -594,10 +686,12 @@ if uploaded_file is not None:
             with tab3:
                 st.markdown("### 🚨 Honeypot Detection Report")
 
-                if honeypot_count == 0:
+                honeypots = [r["honeypot_result"] for r in all_results if r.get("is_honeypot")]
+
+                if len(honeypots) == 0:
                     st.success("✅ No honeypot candidates detected in this dataset. All profiles appear clean.")
                 else:
-                    st.error(f"⚠️ **{honeypot_count}** honeypot candidate(s) detected and disqualified.")
+                    st.error(f"⚠️ **{len(honeypots)}** honeypot candidate(s) detected and disqualified.")
 
                     honeypot_rows = []
                     for h in honeypots:
