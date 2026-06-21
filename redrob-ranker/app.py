@@ -210,12 +210,20 @@ if uploaded_jd_file is not None:
         except Exception as e:
             st.error(f"Error reading file: {e}")
 
+custom_jd_provided = False
+jd_override = None
+
 if jd_text.strip():
+    custom_jd_provided = True
     # 1. Experience years extraction
-    # Look for years like "5-9 years" or "5 to 9 years"
-    exp_match = re.search(r"(\d+)[\s-]+(?:to|-)[\s]*(\d+)\s*years?", jd_text, re.IGNORECASE)
+    # Look for years like "5-9 years" or "5 to 9 years" or en-dash "4–8 years"
+    exp_match = re.search(r"(\d+)[\s\u2013-]+(?:to|[\u2013-])?[\s]*(\d+)\s*years?", jd_text, re.IGNORECASE)
+    extracted_min_years = None
+    extracted_max_years = None
     if exp_match:
-        exp_range = f"{exp_match.group(1)}-{exp_match.group(2)} years"
+        extracted_min_years = int(exp_match.group(1))
+        extracted_max_years = int(exp_match.group(2))
+        exp_range = f"{extracted_min_years}-{extracted_max_years} years"
     else:
         exp_range = "not specified"
 
@@ -253,7 +261,14 @@ if jd_text.strip():
     skills_str = ", ".join(found_skills) if found_skills else "none found"
 
     st.info(f"📋 **Detected requirements:**\n- **Experience:** {exp_range}\n- **Skills:** {skills_str}\n- **Locations:** {location_str}")
-    st.warning("⚠️ **Note:** Custom JD parsing is a preview feature for this demo. Scoring currently uses the hackathon's official JD for accurate evaluation against the competition's grading criteria.")
+    st.warning("⚠️ **Note:** When a custom JD is provided, scoring dynamically adapts to its detected skills, experience range, and locations. This sandbox feature is separate from the official hackathon submission, which always scores against the competition's released JD via rank.py.")
+    
+    jd_override = {
+        'min_years': extracted_min_years,
+        'max_years': extracted_max_years,
+        'skills': found_skills if found_skills else None,
+        'locations': found_cities if found_cities else None,
+    }
 else:
     st.caption("ℹ️ **Using default JD:** Senior AI Engineer — Founding Team (Pune/Noida, 5-9 yrs, retrieval/ranking systems)")
 
@@ -343,18 +358,19 @@ def parse_candidate_file(file_bytes: bytes, filename: str) -> list:
 # ──────────────────────────────────────────────────────────────────────
 # Helper: Run the full scoring pipeline
 # ──────────────────────────────────────────────────────────────────────
-def run_pipeline(candidates: list) -> dict:
+def run_pipeline(candidates: list, jd_override: dict = None) -> dict:
     """
     Executes the scoring and honeypot detection pipeline on all candidates.
 
     Args:
         candidates (list): List of candidate dicts.
+        jd_override (dict): Optional scoring parameter overrides.
 
     Returns:
         dict: Pipeline results containing scored_results, honeypot_results, 
               sorted_results, and summary statistics.
     """
-    scorer = CandidateScorer()
+    scorer = CandidateScorer(jd_override=jd_override)
     detector = HoneypotDetector()
 
     scored_results = []
@@ -439,6 +455,7 @@ def run_pipeline(candidates: list) -> dict:
         "honeypots": honeypot_results,
         "total": len(candidates),
         "honeypot_count": len(honeypot_results),
+        "jd_override": jd_override
     }
 
 
@@ -558,7 +575,7 @@ if uploaded_file is not None:
         # Use session_state to persist results across reruns
         if run_clicked:
             with st.spinner("🔍 Scoring candidates and detecting honeypots..."):
-                results = run_pipeline(candidates)
+                results = run_pipeline(candidates, jd_override=jd_override if custom_jd_provided else None)
                 st.session_state["pipeline_results"] = results
                 st.session_state["ran"] = True
 
@@ -585,6 +602,17 @@ if uploaded_file is not None:
                 <div class="stat-pill">📊 Avg Score: <span class="num">{avg_score:.4f}</span></div>
             </div>
             """, unsafe_allow_html=True)
+
+            # Show caption if custom JD was used
+            used_override = results.get("jd_override")
+            if used_override:
+                min_years = used_override.get('min_years')
+                max_years = used_override.get('max_years')
+                skills = used_override.get('skills', []) or []
+                locations = used_override.get('locations', []) or []
+                st.caption(f"Scored against custom JD: {min_years}-{max_years} yrs, "
+                           f"skills: {', '.join(skills[:5])}{'...' if len(skills)>5 else ''}, "
+                           f"locations: {', '.join(locations)}")
 
             st.divider()
 

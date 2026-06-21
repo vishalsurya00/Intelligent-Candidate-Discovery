@@ -21,7 +21,7 @@ class CandidateScorer:
     engagement signals, location preferences, and certifications.
     """
 
-    def __init__(self):
+    def __init__(self, jd_override=None):
         """
         Initializes the CandidateScorer with target criteria.
         Defines lists of desired skills, blacklist companies, and preferred 
@@ -97,6 +97,20 @@ class CandidateScorer:
             "hugging face", "deeplearning.ai", "mlops", "information retrieval"
         ]
 
+        if jd_override is None:
+            self.must_have_skills = self.MUST_HAVE_SKILLS
+            self.nice_to_have_skills = self.NICE_TO_HAVE_SKILLS
+            self.ideal_min_years = 5
+            self.ideal_max_years = 9
+            self.preferred_locations = self.PREFERRED_CITIES_T1
+        else:
+            self.must_have_skills = jd_override.get('skills', self.MUST_HAVE_SKILLS)
+            self.nice_to_have_skills = self.NICE_TO_HAVE_SKILLS
+            self.ideal_min_years = jd_override.get('min_years', 5)
+            self.ideal_max_years = jd_override.get('max_years', 9)
+            raw_locations = jd_override.get('locations', self.PREFERRED_CITIES_T1)
+            self.preferred_locations = [loc.lower().strip() for loc in raw_locations] if raw_locations else self.PREFERRED_CITIES_T1
+
     def score_skills(self, candidate: dict) -> float:
         """
         Scores candidate skill match against the JD using trust multipliers and title penalties.
@@ -124,10 +138,10 @@ class CandidateScorer:
                     continue
 
                 # 1. Check MUST_HAVE or NICE_TO_HAVE matching (case-insensitive partial match)
-                is_must = any(mh in skill_name or skill_name in mh for mh in self.MUST_HAVE_SKILLS)
+                is_must = any(mh in skill_name or skill_name in mh for mh in self.must_have_skills)
                 is_nice = False
                 if not is_must:
-                    is_nice = any(nth in skill_name or skill_name in nth for nth in self.NICE_TO_HAVE_SKILLS)
+                    is_nice = any(nth in skill_name or skill_name in nth for nth in self.nice_to_have_skills)
 
                 if not (is_must or is_nice):
                     continue
@@ -299,25 +313,31 @@ class CandidateScorer:
             profile = candidate.get("profile", {})
             years = float(profile.get("years_of_experience", 0.0) or 0.0)
 
-            # Map years to experience curve
-            if years < 2.0:
-                return 0.05
-            elif years < 3.0:
-                return 0.20
-            elif years < 4.0:
-                return 0.45
-            elif years < 5.0:
-                return 0.72
-            elif years <= 7.0:
-                return 1.00
-            elif years <= 9.0:
-                return 0.95
-            elif years <= 11.0:
-                return 0.80
-            elif years <= 13.0:
-                return 0.65
+            # Map years to experience curve relative to ideal min/max years
+            if years < self.ideal_min_years:
+                diff = self.ideal_min_years - years
+                if diff <= 1.0:
+                    return 0.72
+                elif diff <= 2.0:
+                    return 0.45
+                elif diff <= 3.0:
+                    return 0.20
+                else:
+                    return 0.05
+            elif years <= self.ideal_max_years:
+                mid = (self.ideal_min_years + self.ideal_max_years) / 2.0
+                if years <= mid:
+                    return 1.00
+                else:
+                    return 0.95
             else:
-                return 0.50
+                diff = years - self.ideal_max_years
+                if diff <= 2.0:
+                    return 0.80
+                elif diff <= 4.0:
+                    return 0.65
+                else:
+                    return 0.50
         except Exception:
             return 0.5
 
@@ -560,7 +580,7 @@ class CandidateScorer:
             signals = candidate.get("redrob_signals", {})
 
             # Tier 1 check
-            if any(city in location for city in self.PREFERRED_CITIES_T1):
+            if any(city in location for city in self.preferred_locations):
                 return 1.0
 
             # Relocation check
@@ -696,7 +716,7 @@ class CandidateScorer:
             name = s.get("name", "")
             name_lower = name.lower().strip()
             
-            is_must = any(mh in name_lower or name_lower in mh for mh in self.MUST_HAVE_SKILLS)
+            is_must = any(mh in name_lower or name_lower in mh for mh in self.must_have_skills)
             if is_must:
                 # Recalculate trust for display / ranking in reasoning
                 endorsements = float(s.get("endorsements", 0) or 0)
