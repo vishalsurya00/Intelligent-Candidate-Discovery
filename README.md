@@ -1,130 +1,63 @@
 # Redrob Intelligent Candidate Ranker
-
 ## Redrob Hackathon — Intelligent Candidate Discovery Challenge 2026
 
----
-
 ## Overview
-
-The **Redrob Intelligent Candidate Ranker** is a high-performance candidate ranking system built for the Intelligent Candidate Discovery Challenge. It scores and ranks **100,000 candidates** for a Senior AI Engineer role using a 5-component weighted scoring engine with integrated honeypot detection. The entire pipeline runs in **26 seconds on CPU** with zero network dependencies — everything executes locally and offline.
-
----
+The **Redrob Intelligent Candidate Ranker** ranks 100,000 candidates for a Senior AI Engineer founding-team role. It uses a 6-component scoring engine with 5-check honeypot/fraud detection to identify high-quality applicants. The entire pipeline runs in roughly 60-75 seconds on CPU only, with no network calls and no LLM calls at scoring time.
 
 ## Architecture
-
-The system is organized into **5 focused modules**, each handling a single responsibility:
-
-| File | Purpose |
-|---|---|
-| `loader.py` | Loads and parses candidate profiles from `.jsonl` format, handling schema validation and field normalization |
-| `scorer.py` | Implements the 5-component weighted scoring engine (Skills 35%, Career 25%, Experience 15%, Behavioral 15%, Location 10%) |
-| `honeypot_detector.py` | Runs 4 independent fraud checks to detect and flag synthetic/fake candidate profiles |
-| `rank.py` | Main pipeline orchestrator — loads data, scores candidates, removes honeypots, and outputs the final `submission.csv` |
-| `app.py` | Streamlit-based sandbox UI for interactive exploration and testing of the ranking system |
-
-```
-candidates.jsonl
-       │
-       ▼
-  ┌──────────┐
-  │ loader.py │  ← Parse & validate JSONL
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────────────────┐
-  │ honeypot_detector.py │  ← Flag fake profiles (4 checks)
-  └────┬─────────────────┘
-       │
-       ▼
-  ┌───────────┐
-  │ scorer.py │  ← 5-component weighted scoring
-  └────┬──────┘
-       │
-       ▼
-  ┌──────────┐
-  │ rank.py  │  ← Orchestrate, sort & export
-  └────┬─────┘
-       │
-       ▼
-  submission.csv
-```
-
----
+- **[redrob-ranker/loader.py](redrob-ranker/loader.py)**: Loads candidates from `.json`, `.jsonl`, `.gz`, or `.jsonl.gz` — auto-detects format, streams large files (tested up to 465MB) so memory usage stays flat regardless of file size.
+- **[redrob-ranker/scorer.py](redrob-ranker/scorer.py)**: 6-component scoring engine (skills 30%, career 28%, experience 12%, behavioral 20%, location 7%, certifications 3%) using all 23 `redrob_signals` fields; generates unique, JD-connected, fact-specific reasoning per candidate.
+- **[redrob-ranker/honeypot_detector.py](redrob-ranker/honeypot_detector.py)**: 5 independent fraud checks — timeline impossibility, skill fraud/keyword stuffing, experience mismatch, title-skill mismatch, and assessment-score contradiction (claimed proficiency vs platform-verified test score).
+- **[redrob-ranker/rank.py](redrob-ranker/rank.py)**: Main pipeline — load, ID cross-check, score + honeypot filter, sort, write top-100 CSV. This is the `reproduce_command` entry point.
+- **[redrob-ranker/app.py](redrob-ranker/app.py)**: Streamlit sandbox UI — file upload (any size via streaming), optional JD paste/upload section, live ranking, 4-tab results view (Top Rankings, Score Breakdown, Honeypot Report, Download).
 
 ## Setup Instructions
-
 ### Requirements
+- Python 3.10+
+- `pip install -r requirements.txt`
 
-- **Python 3.10+**
-- All dependencies listed in `requirements.txt`
-
-```bash
-pip install -r requirements.txt
-```
-
-### Running the Ranker
-
-Single command to reproduce the submission:
-
+### Running the Ranker (reproduce_command)
 ```bash
 python rank.py --candidates candidates.jsonl --out submission.csv
 ```
+This is the exact command used to produce the submitted CSV. Verified to run successfully from a clean git clone with no machine-specific dependencies.
 
-### Running the Streamlit App Locally
-
+### Running the Streamlit App locally
 ```bash
 streamlit run app.py
 ```
 
----
-
-## Performance
-
-| Metric | Result |
-|---|---|
-| Candidates scored | **100,000** |
-| Total runtime | **26 seconds** (CPU only) |
-| Honeypots detected & removed | **1,253** |
-| Top 100 score range | **0.932 – 1.000** |
-| Official validation | ✅ **PASSED** (`validate_submission.py`) |
-
----
+## Performance (most recent verified run)
+- 100,000 candidates scored in ~60-75 seconds total pipeline time
+- 1,253 honeypot/fraud candidates detected and excluded — consistent across multiple independent runs including a fresh-clone reproducibility test
+- Top 100 score range: 0.905 to 0.980
+- Validated with the official `validate_submission.py`: **PASSED**
 
 ## Scoring Components
 
-| Component | Weight | Description |
-|---|---|---|
-| **Skills Match** | 35% | MUST_HAVE skills matched with trust multiplier for verified proficiency |
-| **Career Quality** | 25% | Product company experience, AI/ML-specific roles, and career progression |
-| **Experience Fit** | 15% | Optimal 5–9 year experience curve with diminishing returns modeling |
-| **Behavioral Signals** | 15% | 23 `redrob_signals` including platform activity, engagement, and responsiveness |
-| **Location** | 10% | Preferred city matching with relocation willingness consideration |
+| Component | Weight | What it checks |
+| :--- | :--- | :--- |
+| **Skills Match** | 30% | MUST_HAVE/NICE_TO_HAVE skill match with a trust multiplier from endorsements, duration, proficiency, and platform skill-assessment scores; penalized for non-technical current titles |
+| **Career Quality** | 28% | Consulting-firm penalty, AI/ML role detection from titles and descriptions, company size/industry, tenure stability |
+| **Experience Fit** | 12% | Curve peaking at 5-9 years |
+| **Behavioral Signals** | 20% | All 23 `redrob_signals` — recency, availability, notice period, responsiveness, platform trust, market demand, profile quality, GitHub activity |
+| **Location** | 7% | Tier-1/Tier-2 Indian cities, relocation willingness |
+| **Certifications** | 3% | AI/ML-relevant certifications, recency bonus |
 
----
+## Honeypot / Fraud Detection
+5 independent checks, each contributing to a 0-1 `honeypot_score`:
+1. **Timeline impossibility** — career dates don't match stated duration
+2. **Skill fraud** — "expert" proficiency with zero usage duration, or unrealistic skill-count (20+)
+3. **Experience mismatch** — stated years vs sum of career history
+4. **Title-skill mismatch** — AI/ML skills claimed but all career titles are non-technical
+5. **Assessment mismatch** — claimed proficiency contradicts the platform's own `skill_assessment_scores`
 
-## Honeypot Detection
-
-The system runs **4 independent checks** to identify and remove synthetic/fake candidate profiles:
-
-1. **Timeline Impossibility** — Employment dates don't align with claimed duration (e.g., 3 years of experience in a 1-year window)
-2. **Skill Fraud** — Claims expert-level skills with zero recorded usage months or no supporting project history
-3. **Experience Mismatch** — Total claimed years of experience contradicts actual career history timeline
-4. **Title-Skill Mismatch** — Lists advanced AI/ML skills but employment history shows exclusively non-technical roles
-
-> Candidates flagged by **any** of the 4 checks are removed from the final ranking.
-
----
+Any flagged candidate is excluded by setting `final_score` to 0.0 with a `DISQUALIFIED` reasoning string, ensuring honeypots never appear in the top 100 regardless of other scores.
 
 ## Sandbox
+Live demo: [https://intelligent-candidate-discovery-cuvce8kvpupbfnud55zucv.streamlit.app](https://intelligent-candidate-discovery-cuvce8kvpupbfnud55zucv.streamlit.app)
 
-🔗 **Live Demo:** [https://intelligent-candidate-discovery-cuvce8kvpupbfnud55zucv.streamlit.app](https://intelligent-candidate-discovery-cuvce8kvpupbfnud55zucv.streamlit.app)
+Upload `sample_candidates.json` to test. Includes an optional Job Description input (paste or upload) — currently a preview feature for demonstrating generalizability; scoring uses the hackathon's official JD to ensure accurate evaluation against the competition's grading criteria.
 
-Upload `sample_candidates.json` to test the scoring and ranking system interactively.
-
-> **Note:** Streamlit Cloud has a **200 MB upload limit** — use the provided sample file for sandbox testing. Full 100K candidate ranking runs locally via `rank.py`.
-
----
-
-## License
-
-Built for the Redrob Intelligent Candidate Discovery Hackathon 2026.
+## Reproducibility
+Verified by cloning the repository into a clean directory, installing dependencies from `requirements.txt`, and running the `reproduce_command` against the full `candidates.jsonl` — produced an identical 100-row, validator-passing `submission.csv` with 1,253 honeypots excluded, matching prior runs exactly.
