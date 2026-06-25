@@ -591,8 +591,8 @@ jd_override = None
 if jd_text.strip():
     custom_jd_provided = True
     # 1. Experience years extraction
-    # Look for years like "5-9 years" or "5 to 9 years" or en-dash "4–8 years"
-    exp_match = re.search(r"(\d+)[\s\u2013-]+(?:to|[\u2013-])?[\s]*(\d+)\s*years?", jd_text, re.IGNORECASE)
+    # Look for range years like "5-9 years", "5 to 9 years", "4–8 years", "5-9 yrs", "5 to 9 yrs"
+    exp_match = re.search(r"(\d+)[\s\u2013-]+(?:to|[\u2013-])?[\s]*(\d+)\s*(?:years?|yrs?)", jd_text, re.IGNORECASE)
     extracted_min_years = None
     extracted_max_years = None
     if exp_match:
@@ -600,14 +600,34 @@ if jd_text.strip():
         extracted_max_years = int(exp_match.group(2))
         exp_range = f"{extracted_min_years}-{extracted_max_years} years"
     else:
-        exp_range = "not specified"
+        # Check single experience like "2+ years", "2 years", "2 yrs"
+        exp_single = re.search(r"(\d+)(\+?)\s*(?:years?|yrs?)", jd_text, re.IGNORECASE)
+        if exp_single:
+            extracted_min_years = int(exp_single.group(1))
+            has_plus = exp_single.group(2) == "+"
+            exp_range = f"{extracted_min_years}+ years" if has_plus else f"{extracted_min_years} years"
+        else:
+            exp_range = "not specified"
 
     # 2. Location extraction
-    cities_list = [
-        "pune", "noida", "hyderabad", "mumbai", "delhi", "gurugram", 
-        "gurgaon", "bangalore", "bengaluru", "chennai", "new delhi", "ncr",
-        "kolkata", "ahmedabad", "jaipur", "kochi", "coimbatore", "indore", "bhopal"
-    ]
+    city_patterns = {
+        "Bangalore": r"\b(?:beng?alur|bang?alor)\w*\b",
+        "Pune": r"\bpune\b",
+        "Noida": r"\bnoida\b",
+        "Hyderabad": r"\b(?:hyderabad|hyd)\b",
+        "Mumbai": r"\b(?:mumbai|bombay)\b",
+        "Delhi": r"\b(?:delhi|new delhi)\b",
+        "Gurugram": r"\b(?:gurugram|gurgaon)\b",
+        "Chennai": r"\b(?:chennai|madras)\b",
+        "NCR": r"\bncr\b",
+        "Kolkata": r"\b(?:kolkata|calcutta)\b",
+        "Ahmedabad": r"\bahmedabad\b",
+        "Jaipur": r"\bjaipur\b",
+        "Kochi": r"\b(?:kochi|cochin)\b",
+        "Coimbatore": r"\bcoimbatore\b",
+        "Indore": r"\bindore\b",
+        "Bhopal": r"\bbhopal\b"
+    }
     found_cities = []
     # Check if there is a "location" line
     location_line = ""
@@ -617,16 +637,27 @@ if jd_text.strip():
             break
             
     search_source = location_line if location_line else jd_text
-    for city in cities_list:
-        if re.search(rf"\b{city}\b", search_source, re.IGNORECASE):
-            found_cities.append(city.title())
+    for city_name, pattern in city_patterns.items():
+        if re.search(pattern, search_source, re.IGNORECASE):
+            found_cities.append(city_name)
             
     found_cities = list(set(found_cities))
     location_str = ", ".join(found_cities) if found_cities else "not specified"
 
     # 3. Skills extraction
     scorer_instance = CandidateScorer()
-    master_skills = scorer_instance.MUST_HAVE_SKILLS + scorer_instance.NICE_TO_HAVE_SKILLS
+    # Support both AI-specific and common development skills for better detection of general roles
+    common_dev_skills = [
+        "frontend", "backend", "fullstack", "full-stack", "react", "angular", "vue", "svelte",
+        "javascript", "typescript", "html", "css", "sass", "less", "tailwind", "bootstrap",
+        "nodejs", "node.js", "express", "django", "flask", "fastapi", "spring", "spring boot",
+        "java", "c++", "c#", "golang", "go", "rust", "ruby", "rails", "php", "laravel",
+        "sql", "nosql", "mongodb", "postgresql", "postgres", "mysql", "redis", "elasticsearch",
+        "docker", "kubernetes", "k8s", "aws", "gcp", "azure", "cloud", "git", "github", "ci/cd",
+        "devops", "mlops", "system design", "microservices", "graphql", "rest api", "testing",
+        "unit test", "jest", "cypress", "selenium", "agile", "scrum", "project management"
+    ]
+    master_skills = scorer_instance.MUST_HAVE_SKILLS + scorer_instance.NICE_TO_HAVE_SKILLS + common_dev_skills
     found_skills = []
     for skill in master_skills:
         if re.search(rf"\b{re.escape(skill)}\b", jd_text, re.IGNORECASE):
